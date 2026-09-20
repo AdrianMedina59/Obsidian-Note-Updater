@@ -185,6 +185,20 @@ void SyncNode::handle_file_request(const std::string& relative_path)
         return;
     }
 
+
+     // Safeguard against empty files breaking the socket tunnel
+    if (fs::file_size(full_path) == 0) {
+        std::cout << "[Transfer] Creating empty file placeholder for: " << relative_path << "\n";
+        nlohmann::json payload = {
+            {"type", "MSG_FILE_PAYLOAD"},
+            {"path", relative_path},
+            {"content", ""} // Explicitly empty string block
+        };
+        send_message(payload);
+        return;
+    }
+
+
     std::ifstream file(full_path, std::ios::binary);
     if(!file)return;
 
