@@ -1,8 +1,8 @@
 #include "network/sync_node.hpp"
 #include <iostream>
 
-SyncNode::SyncNode(unsigned short local_port, const std::string& remote_ip, unsigned short remote_port)
-    : local_port_(local_port), remote_ip_(remote_ip), remote_port_(remote_port)  {}
+SyncNode::SyncNode(unsigned short local_port, const std::string& remote_ip, unsigned short remote_port, SnapshotEngine& snapshot_engine)
+    : local_port_(local_port), remote_ip_(remote_ip), remote_port_(remote_port),  snapshot_engine_(snapshot_engine) {}
 
 SyncNode::~SyncNode(){
     stop();
@@ -54,6 +54,33 @@ void SyncNode::stop(){
     std::cout << "[SYSTEM] Network transport infrastructure shutdown cleanly.\n";
 }
 
+
+void SyncNode::send_vault_index(){
+    //regen snapshot right before trasnmitting to ensure accuracy 
+    snapshot_engine_.generate_snapshot();
+    const auto& local_snapshot = snapshot_engine_.get_snapshot();
+
+    nlohmann::json index_payload = {
+        {"type", "MSG_VAULT_INDEX"},
+        {"files", nlohmann::json::array()}
+    };
+
+    for(const auto& [path, meta] : local_snapshot){
+        nlohmann::json file_meta = {
+            {"path", meta.relative_path},
+            {"size", meta.file_size},
+            {"hash", meta.content_hash},
+            {"mtime", meta.last_modified}
+        };
+        index_payload["files"].push_back(file_meta);
+    }
+
+    std::cout << "[TRANSPORT] Transmitting local vault catolog map to peer ....\n";
+    send_message(index_payload);
+}
+
+
+
 void SyncNode::listen_loop(){
     try{
         asio::ip::tcp::acceptor acceptor(io_context_, asio::ip::tcp::endpoint(asio::ip::tcp::v4(), local_port_));
@@ -88,12 +115,65 @@ void SyncNode::receive_loop(asio::ip::tcp::socket socket){
             std::string raw_json(buffer.begin(), buffer.end());
             auto parsed_payload = nlohmann::json::parse(raw_json);
 
-            std::cout << "[RECEIVED NODE EVENT] Header Content: " << parsed_payload.dump(2) << "\n";
+
+            if(parsed_payload.contains("type") && parsed_payload["type"] == "MSG_VAULT_INDEX"){
+                reconcile_remote_idex(parsed_payload);
+            }else{
+                std::cout << "[RECEIVED NODE EVENT] Header Content: " << parsed_payload.dump(2) << "\n";
+            } 
         }
     }catch(const std::exception& e){
         std::cout << "[SESSION] peer disconnected or connection timed out.\n";
     }
 }
+
+
+void SyncNode::reconcile_remote_idex(const nlohmann::json& remote_payload)
+{
+    std::cout << "\n [RECONCILIATION STAGE] Analyzing remote Vault map...\n";
+
+    //regen local index to ensure we compare fresh data
+    snapshot_engine_.generate_snapshot();
+    auto local_snapshot = snapshot_engine_.get_snapshot();
+
+    std::unordered_map<std::string, nlohmann::json> remote_files;
+    for(const auto& file : remote_payload["files"])
+    {
+        remote_files[file["path"]] = file;
+    }
+
+    std::cout << "Discovered Discrepancies....\n";
+
+    //1. check for the files that are modified or completely missing locally
+    for(const auto& [path, remote_meta] : remote_files){
+        std::string r_hash = remote_meta["hash"];
+        int64_t r_mtime = remote_meta["mtime"];
+
+        if(local_snapshot.find(path) == local_snapshot.end()){
+            std::cout << " [MISSING LOCALLY] File need to be downloaded: " << path << "\n";
+        }
+        else{
+            const auto& local_meta = local_snapshot[path];
+            if(local_meta.content_hash != r_hash){
+                //content mismastch detected 
+                if(r_mtime > local_meta.last_modified){
+                    std::cout << " [OUTDATED LOCALLY] Remote copy is newer. Update " << path << "\n";
+                }
+                else{
+                    std::cout << "[NEWER LOCALLY] local copy is newer. Peer needs update: " << path << "\n";
+                }
+            }
+            //remove from local tracking map so remaining entries are marked as unique
+            local_snapshot.erase(path);
+        }
+    }
+
+    //2. anything remainining is local_snapshot doesn't exist on the remote peer 
+    for(const auto& [path, local_meta] : local_snapshot){
+        std::cout << "[UNIQUE TO LOCAL] Local files needs to be updated: " << path << "\n";
+    }
+}
+
 
 void SyncNode::send_message(const nlohmann::json& message){
     std::lock_guard<std::mutex> lock(socket_mutex_);

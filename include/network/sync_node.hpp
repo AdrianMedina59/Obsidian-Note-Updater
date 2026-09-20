@@ -4,10 +4,11 @@
 #include <asio.hpp>
 #include <thread>
 #include <atomic>
+#include "storage/snapshot.hpp"
 
 class SyncNode{
  public:
-    SyncNode(unsigned short local_port, const std::string& remote_ip, unsigned short remote_port);
+    SyncNode(unsigned short local_port, const std::string& remote_ip, unsigned short remote_port, SnapshotEngine& snapshot_engine);
     ~SyncNode();
 
     //starting background network threads
@@ -19,14 +20,20 @@ class SyncNode{
     //sending a message over an active connection
     void send_message(const nlohmann::json& message);
 
+    //helper function to send the current vault index to the peer
+    void send_vault_index();
+
 private:
     //background exection loops
     void listen_loop();
     void receive_loop(asio::ip::tcp::socket socket);
+    void reconcile_remote_idex(const nlohmann::json& remote_payload);
 
     unsigned short local_port_;
     std::string  remote_ip_;
     unsigned short remote_port_;
+
+    SnapshotEngine& snapshot_engine_; // Reference to local file state
 
     asio::io_context io_context_;
     std::thread listener_thread_;

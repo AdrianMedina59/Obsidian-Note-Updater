@@ -16,12 +16,10 @@ int main(int argc, char* argv[])
     unsigned short remote_port = static_cast<unsigned short>(std::stoi(argv[3]));
     std::string vault_dir = argv[4];
 
-    std::cout << "[SYSTEM] Initalizing vault catolog scanner ....\n";
     SnapshotEngine engine(vault_dir);
-    engine.generate_snapshot();
-    engine.debug_print();
-
-    SyncNode node(local_port, remote_ip, remote_port);
+   
+    //initalzing sync node with required members
+    SyncNode node(local_port, remote_ip, remote_port, engine);
     node.start();
 
     std::cout <<"Press Enter to transmit a test sync transaction handshake or 'q' then Enter to quit... \n";
@@ -30,12 +28,7 @@ int main(int argc, char* argv[])
     {
         if(input == "q") break;
 
-        nlohmann::json handshake_tx = {
-            {"type", "SYNC_REQ"},
-            {"version", "1.0.0"},
-            {"valut_name", "MyObisidionVault"}
-        };
-        node.send_message(handshake_tx);
+        node.send_vault_index();
     }
 
     node.stop();
