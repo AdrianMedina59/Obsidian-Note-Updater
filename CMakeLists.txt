@@ -47,7 +47,8 @@ set(SRC_FILES
     src/network/sync_node.cpp
 )
 
-add_executable(peer_sync ${SRC_FILES})
+add_executable(peer_sync ${SRC_FILES}
+    src/storage/snapshot.cpp)
 
 # Link dependencies and set include paths
 target_include_directories(peer_sync PRIVATE 
