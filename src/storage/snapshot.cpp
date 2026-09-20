@@ -59,6 +59,12 @@ void SnapshotEngine::generate_snapshot(){
         //only track standard files (skip structural folders themselves)
         if(fs::is_regular_file(path)){
             try{
+
+                 //filter to only accept markdown files
+                 if(path.extension() != ".md"){
+                    continue;
+                 }   
+
                 //compute the path relative to the root of the vault
                 std::filesystem::path relative = fs::relative(path, vault_path_);
                 std::string rel_path_string = relative.generic_string(); //forces unified '/'
