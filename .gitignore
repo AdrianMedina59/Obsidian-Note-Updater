@@ -1,0 +1,52 @@
+# ===================================================================
+# Build Directories & Compilation Artifacts
+# ===================================================================
+# Standard CMake build directories
+/[Bb]uild/
+/out/
+
+# Object files, libraries, and executables
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dylib
+*.dll
+*.exe
+
+# CMake generated files generated locally
+CMakeCache.txt
+CMakeFiles/
+CMakePresets.json
+Makefile
+cmake_install.cmake
+ninja.build
+.cmake/
+
+# ===================================================================
+# IDEs and Editors
+# ===================================================================
+# Visual Studio Code
+.vscode/
+!.vscode/extensions.json
+
+# JetBrains CLion / IntelliJ
+.idea/
+*.iws
+
+# Visual Studio (Windows)
+.vs/
+*.user
+*.suo
+
+# Operating System Specific files
+.DS_Store
+Thumbs.db
+
+# ===================================================================
+# Application Runtime Outputs (For Phase 1 Testing)
+# ===================================================================
+# Ignore log files or local configuration overrides
+*.log
+peer_sync
