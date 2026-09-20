@@ -27,6 +27,8 @@ class SnapshotEngine{
         //Recersively scans the vault path and populates the current snapshot
         void generate_snapshot();
 
+        const std::string get_vault_path() const {return vault_path_.string();}
+
     private:
         //Helper to calculate a file hash securely
         std::string calculate_hash(const fs::path& file_path);

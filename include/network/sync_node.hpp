@@ -27,7 +27,9 @@ private:
     //background exection loops
     void listen_loop();
     void receive_loop(asio::ip::tcp::socket socket);
-    void reconcile_remote_idex(const nlohmann::json& remote_payload);
+    void reconcile_remote_index(const nlohmann::json& remote_payload);
+    void handle_file_request(const std::string& relative_path);
+    void handle_incoming_payload(const nlohmann::json& remote_payload);
 
     unsigned short local_port_;
     std::string  remote_ip_;

@@ -1,4 +1,5 @@
 #include "network/sync_node.hpp"
+#include <fstream>
 #include <iostream>
 
 SyncNode::SyncNode(unsigned short local_port, const std::string& remote_ip, unsigned short remote_port, SnapshotEngine& snapshot_engine)
@@ -121,7 +122,7 @@ void SyncNode::listen_loop() {
                                 auto parsed_payload = nlohmann::json::parse(raw_json);
 
                                 if (parsed_payload.contains("type") && parsed_payload["type"] == "MSG_VAULT_INDEX") {
-                                    reconcile_remote_idex(parsed_payload);
+                                    reconcile_remote_index(parsed_payload);
                                 }
                             }
                         } catch (...) {
@@ -157,9 +158,21 @@ void SyncNode::receive_loop(asio::ip::tcp::socket socket) {
             std::string raw_json(buffer.begin(), buffer.end());
             auto parsed_payload = nlohmann::json::parse(raw_json);
 
-            if (parsed_payload.contains("type") && parsed_payload["type"] == "MSG_VAULT_INDEX") {
-                reconcile_remote_idex(parsed_payload);
+            std::string msg_type = parsed_payload.value("type", "");
+
+            if(msg_type == "MSG_VAULT_INDEX"){
+                reconcile_remote_index(parsed_payload);
             }
+            else if(msg_type == "MSG_FILE_REQ"){
+                //peer wahts a file from us. Read it from disk and trasnmit it
+                std::string requested_path = parsed_payload["path"];
+                handle_file_request(parsed_payload);
+            }
+            else if(msg_type == "MSG_FILE_PAYLOAD"){
+                //incoming file data streaming in from peer. Write it safely
+                handle_incoming_payload(parsed_payload);
+            }
+            
         }
     }
     catch (...) {
@@ -169,49 +182,94 @@ void SyncNode::receive_loop(asio::ip::tcp::socket socket) {
 
 
 
-void SyncNode::reconcile_remote_idex(const nlohmann::json& remote_payload)
-{
-    std::cout << "\n [RECONCILIATION STAGE] Analyzing remote Vault map...\n";
-
-    //regen local index to ensure we compare fresh data
+void SyncNode::reconcile_remote_index(const nlohmann::json& remote_payload) {
     snapshot_engine_.generate_snapshot();
     auto local_snapshot = snapshot_engine_.get_snapshot();
 
-    std::unordered_map<std::string, nlohmann::json> remote_files;
-    for(const auto& file : remote_payload["files"])
-    {
-        remote_files[file["path"]] = file;
-    }
+    std::cout << "[Sync] Reconciling indices and issuing pull requests...\n";
 
-    std::cout << "Discovered Discrepancies....\n";
+    for (const auto& file : remote_payload["files"]) {
+        std::string path = file["path"];
+        std::string r_hash = file["hash"];
+        int64_t r_mtime = file["mtime"];
 
-    //1. check for the files that are modified or completely missing locally
-    for(const auto& [path, remote_meta] : remote_files){
-        std::string r_hash = remote_meta["hash"];
-        int64_t r_mtime = remote_meta["mtime"];
+        bool request_needed = false;
 
-        if(local_snapshot.find(path) == local_snapshot.end()){
-            std::cout << " [MISSING LOCALLY] File need to be downloaded: " << path << "\n";
-        }
-        else{
+        if (local_snapshot.find(path) == local_snapshot.end()) {
+            std::cout << " -> Pulling Missing File: " << path << "\n";
+            request_needed = true;
+        } else {
             const auto& local_meta = local_snapshot[path];
-            if(local_meta.content_hash != r_hash){
-                //content mismastch detected 
-                if(r_mtime > local_meta.last_modified){
-                    std::cout << " [OUTDATED LOCALLY] Remote copy is newer. Update " << path << "\n";
-                }
-                else{
-                    std::cout << "[NEWER LOCALLY] local copy is newer. Peer needs update: " << path << "\n";
-                }
+            if (local_meta.content_hash != r_hash && r_mtime > local_meta.last_modified) {
+                std::cout << " -> Pulling Outdated File (Remote is newer): " << path << "\n";
+                request_needed = true;
             }
-            //remove from local tracking map so remaining entries are marked as unique
-            local_snapshot.erase(path);
+        }
+
+        if (request_needed) {
+            nlohmann::json req_payload = {
+                {"type", "MSG_FILE_REQ"},
+                {"path", path}
+            };
+            send_message(req_payload);
         }
     }
+}
 
-    //2. anything remainining is local_snapshot doesn't exist on the remote peer 
-    for(const auto& [path, local_meta] : local_snapshot){
-        std::cout << "[UNIQUE TO LOCAL] Local files needs to be updated: " << path << "\n";
+void SyncNode::handle_file_request(const std::string& relative_path)
+{
+    //reconstruct canonical absolute path using host filesystem anchor
+    fs::path full_path = fs::path(snapshot_engine_.get_vault_path()) / relative_path;
+
+    if(!fs::exists(full_path) || !fs::is_regular_file(full_path)){
+        std::cerr << "[TRANSFER ERROR] Denied pull request for non-existent assest: " << relative_path << "\n";
+        return;
+    }
+
+    std::ifstream file(full_path, std::ios::binary);
+    if(!file)return;
+
+    //read raw content into a string buffer
+    std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+
+    nlohmann::json payload = {
+        {"type", "MSG_FILE_PAYLOAD"},
+        {"path", relative_path},
+        {"content", content}
+    };
+
+  std::cout << "[Transfer] Uploading: " << relative_path << " (" << content.size() << " bytes)\n";
+  send_message(payload);
+}
+
+void SyncNode::handle_incoming_payload(const nlohmann::json& payload)
+{
+    std::string relative_path = payload["path"];
+    std::string content = payload["content"];
+
+    fs::path target_path = fs::path(snapshot_engine_.get_vault_path()) / relative_path;
+
+    //ensure nested parent directories exist locally before attempting file creation
+    fs::create_directory(target_path.parent_path());
+
+    //1. implement atomic write - output contents to a temp staging workspace
+    fs::path tmp_path = target_path;
+    tmp_path.replace_extension(target_path.extension().string() + ".tmp");
+
+    std::ofstream out_file(tmp_path, std::ios::binary);
+    if(!out_file){
+        std::cerr << "[ID ERROR] Failed tp open temp files for write: " << tmp_path << "\n";
+        return; 
+    }
+    out_file.write(content.data(), content.size());
+    out_file.close();
+
+    //2. Atomic rename operation swaps staging file over target notes cleanly
+    try{
+        fs::rename(tmp_path, target_path);
+        std::cout << "[SYNC SUCCESS] Successfully synced and updated file: " << relative_path << "\n";
+    }catch(const std::exception& e){
+        std::cerr << "[IO ERROR] Atomic replacement commit failed: " << e.what() << "\n";
     }
 }
 
