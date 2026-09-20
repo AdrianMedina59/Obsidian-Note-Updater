@@ -81,51 +81,92 @@ void SyncNode::send_vault_index(){
 
 
 
-void SyncNode::listen_loop(){
-    try{
+void SyncNode::listen_loop() {
+    try {
         asio::ip::tcp::acceptor acceptor(io_context_, asio::ip::tcp::endpoint(asio::ip::tcp::v4(), local_port_));
-        std::cout << "[SERVER] Listening on port " << local_port_ << "...\n";
+        std::cout << "[Server] Listening on port " << local_port_ << "...\n";
 
-        while(is_running_){
+        while (is_running_) {
             asio::ip::tcp::socket socket(io_context_);
-            acceptor.accept(socket); //Blocks until a peer arrives
-            std::cout << "[SERVER] Connection received from: " << socket.remote_endpoint() << "\n";
+            acceptor.accept(socket); 
+            std::cout << "[Server] Connection received from: " << socket.remote_endpoint() << "\n";
+            
+            // --- NEW: Promote the accepted socket to handle outbound traffic if none exists ---
+            {
+                std::lock_guard<std::mutex> lock(socket_mutex_);
+                if (!outbound_socket_ || !outbound_socket_->is_open()) {
+                    // Clone/move the socket context safely before handing off to receive loop
+                    outbound_socket_ = std::make_unique<asio::ip::tcp::socket>(std::move(socket));
+                    std::cout << "[Server] Promoted inbound socket to bi-directional transport pipe!\n";
+                    
+                    // Spawn receiver thread using our newly tracked shared pointer
+                    std::thread([this]() {
+                        try {
+                            while (is_running_) {
+                                uint32_t payload_length = 0;
+                                // Read from the shared outbound socket pointer
+                                {
+                                    std::lock_guard<std::mutex> lock(socket_mutex_);
+                                    if(!outbound_socket_) break;
+                                    asio::read(*outbound_socket_, asio::buffer(&payload_length, sizeof(payload_length)));
+                                }
 
-            //Delegate session tracking to a seperate detached worker thread
+                                std::vector<char> buffer(payload_length);
+                                {
+                                    std::lock_guard<std::mutex> lock(socket_mutex_);
+                                    asio::read(*outbound_socket_, asio::buffer(buffer.data(), payload_length));
+                                }
+
+                                std::string raw_json(buffer.begin(), buffer.end());
+                                auto parsed_payload = nlohmann::json::parse(raw_json);
+
+                                if (parsed_payload.contains("type") && parsed_payload["type"] == "MSG_VAULT_INDEX") {
+                                    reconcile_remote_idex(parsed_payload);
+                                }
+                            }
+                        } catch (...) {
+                            std::cout << "[Session] Peer disconnected from bi-directional channel.\n";
+                        }
+                    }).detach();
+                    
+                    continue; // Skip standard detachment logic since we handled it
+                }
+            }
+
+            // Fallback for secondary connections
             std::thread(&SyncNode::receive_loop, this, std::move(socket)).detach();
         }
-
-    }catch(const std::exception e ){
-        if(is_running_){
-            std::cerr << "[Server Error] Exception encountered: " << e.what() << "\n";
-        }
+    }
+    catch (const std::exception& e) {
+        if (is_running_) std::cerr << "[Server Error] " << e.what() << "\n";
     }
 }
 
-void SyncNode::receive_loop(asio::ip::tcp::socket socket){
-    try{
-        while(is_running_){
-            //read 4-byte header specifying length payload constraint
+
+void SyncNode::receive_loop(asio::ip::tcp::socket socket) {
+    try {
+        // Wrap local socket instance into a shared state
+        auto shared_sock = std::make_shared<asio::ip::tcp::socket>(std::move(socket));
+        while (is_running_) {
             uint32_t payload_length = 0;
-            asio::read(socket, asio::buffer(&payload_length, sizeof(payload_length)));
+            asio::read(*shared_sock, asio::buffer(&payload_length, sizeof(payload_length)));
 
             std::vector<char> buffer(payload_length);
-            asio::read(socket, asio::buffer(buffer.data(), payload_length));
+            asio::read(*shared_sock, asio::buffer(buffer.data(), payload_length));
 
             std::string raw_json(buffer.begin(), buffer.end());
             auto parsed_payload = nlohmann::json::parse(raw_json);
 
-
-            if(parsed_payload.contains("type") && parsed_payload["type"] == "MSG_VAULT_INDEX"){
+            if (parsed_payload.contains("type") && parsed_payload["type"] == "MSG_VAULT_INDEX") {
                 reconcile_remote_idex(parsed_payload);
-            }else{
-                std::cout << "[RECEIVED NODE EVENT] Header Content: " << parsed_payload.dump(2) << "\n";
-            } 
+            }
         }
-    }catch(const std::exception& e){
-        std::cout << "[SESSION] peer disconnected or connection timed out.\n";
+    }
+    catch (...) {
+        std::cout << "[Session] Peer disconnected.\n";
     }
 }
+
 
 
 void SyncNode::reconcile_remote_idex(const nlohmann::json& remote_payload)
