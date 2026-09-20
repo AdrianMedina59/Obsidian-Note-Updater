@@ -26,7 +26,7 @@ class SyncNode{
 private:
     //background exection loops
     void listen_loop();
-    void receive_loop(asio::ip::tcp::socket socket);
+    void receive_loop(std::shared_ptr<asio::ip::tcp::socket> socket);
     void reconcile_remote_index(const nlohmann::json& remote_payload);
     void handle_file_request(const std::string& relative_path);
     void handle_incoming_payload(const nlohmann::json& remote_payload);
@@ -44,6 +44,6 @@ private:
     
     //active outbound connection storage
     std::mutex socket_mutex_;
-    std::unique_ptr<asio::ip::tcp::socket> outbound_socket_;
+    std::shared_ptr<asio::ip::tcp::socket> active_socket_;
 
 };
