@@ -4,6 +4,8 @@
 #include <asio.hpp>
 #include <thread>
 #include <atomic>
+#include <mutex>
+#include <memory>
 #include "storage/snapshot.hpp"
 
 class SyncNode{
@@ -45,5 +47,8 @@ private:
     //active outbound connection storage
     std::mutex socket_mutex_;
     std::shared_ptr<asio::ip::tcp::socket> active_socket_;
+
+    //serializes asio::write calls: several threads send frames on the same socket
+    std::mutex write_mutex_;
 
 };
