@@ -111,6 +111,7 @@ void SyncNode::listen_loop() {
 void SyncNode::receive_loop(std::shared_ptr<asio::ip::tcp::socket> socket) {
     try {
         while (is_running_) {
+            try{
             uint32_t payload_length = 0;
             asio::read(*socket, asio::buffer(&payload_length, sizeof(payload_length)));
 
@@ -128,6 +129,10 @@ void SyncNode::receive_loop(std::shared_ptr<asio::ip::tcp::socket> socket) {
             } else if (msg_type == "MSG_FILE_PAYLOAD") {
                 handle_incoming_payload(parsed_payload);
             }
+         } catch(const nlohmann::json::parse_error& e){
+             std::cerr << "[Framing Error] JSON packet corruption detected: " << e.what() << "\n";
+             break; // Break the loop safely to allow reconnection
+         }
         }
     }
     catch (...) {
@@ -171,6 +176,9 @@ void SyncNode::reconcile_remote_index(const nlohmann::json& remote_payload) {
                 {"path", path}
             };
             send_message(req_payload);
+
+            //short throttling backoff to ensure packets are sent not too fast
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
         }
     }
 }
