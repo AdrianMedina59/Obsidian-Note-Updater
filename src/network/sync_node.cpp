@@ -111,7 +111,7 @@ void SyncNode::listen_loop() {
 void SyncNode::receive_loop(std::shared_ptr<asio::ip::tcp::socket> socket) {
     try {
         while (is_running_) {
-            try{
+            try {
             uint32_t payload_length = 0;
             asio::read(*socket, asio::buffer(&payload_length, sizeof(payload_length)));
 
@@ -137,6 +137,8 @@ void SyncNode::receive_loop(std::shared_ptr<asio::ip::tcp::socket> socket) {
     }
     catch (...) {
         std::cout << "[Session] Active communication pipeline disconnected.\n";
+       
+       
         std::lock_guard<std::mutex> lock(socket_mutex_);
         if (active_socket_ == socket) {
             active_socket_.reset();
@@ -256,7 +258,9 @@ void SyncNode::handle_incoming_payload(const nlohmann::json& payload)
 
 
 void SyncNode::send_message(const nlohmann::json& message) {
+
     std::lock_guard<std::mutex> lock(socket_mutex_);
+   
     if (!active_socket_ || !active_socket_->is_open()) {
         std::cerr << "[Transport Error] No active communication channel available.\n";
         return;
@@ -266,12 +270,14 @@ void SyncNode::send_message(const nlohmann::json& message) {
         std::string serialized = message.dump();
         uint32_t length = static_cast<uint32_t>(serialized.size());
 
-        std::vector<asio::const_buffer> buffers = {
-            asio::buffer(&length, sizeof(length)),
-            asio::buffer(serialized.data(), length)
-        };
+        //flatten layout into a single continous string packet block
+        std::string packet;
+        packet.resize(sizeof(length) + length);
 
-        asio::write(*active_socket_, buffers);
+        std::memcpy(packet.data(), &length, sizeof(length));
+        std::memcpy(packet.data() + sizeof(length), serialized.data(), length);
+
+        asio::write(*active_socket_, asio::buffer(packet));
     }
     catch (const std::exception& e) {
         std::cerr << "[Transmit Error] Packet drop occurred: " << e.what() << "\n";
