@@ -139,19 +139,21 @@ void SyncNode::receive_loop(std::shared_ptr<asio::ip::tcp::socket> socket) {
                 std::string msg_type = parsed_payload.value("type", "");
 
                 if (msg_type == "MSG_VAULT_INDEX") {
-                    //This allows receive_loop to immediately return and wait for incoming files!
-                    std::thread([this, parsed_payload]() {
-                         try {
-                             reconcile_remote_index(parsed_payload);
-                            }
-                            catch (const std::exception& e) {
-                                std::cerr << "[Reconciliation Error] " << e.what() << "\n";
-                            }
-                        }).detach();
-
-                } else if (msg_type == "MSG_FILE_REQ") {
+                    // --- FIXED: Pass a completely isolated string copy to prevent memory race conditions ---
+                    std::thread([this, raw_json_copy = std::move(raw_json)]() {
+                        try {
+                            auto thread_safe_json = nlohmann::json::parse(raw_json_copy);
+                            reconcile_remote_index(thread_safe_json);
+                        }
+                        catch (const std::exception& e) {
+                            std::cerr << "[Reconciliation Thread Error] " << e.what() << "\n";
+                        }
+                    }).detach();
+                } 
+                else if (msg_type == "MSG_FILE_REQ") {
                     handle_file_request(parsed_payload["path"]);
-                } else if (msg_type == "MSG_FILE_PAYLOAD") {
+                } 
+                else if (msg_type == "MSG_FILE_PAYLOAD") {
                     handle_incoming_payload(parsed_payload);
                 }
             } 
@@ -164,7 +166,7 @@ void SyncNode::receive_loop(std::shared_ptr<asio::ip::tcp::socket> socket) {
         std::cout << "[Session] Unexpected runtime failure inside reading channel.\n";
     }
 
-    // Single unified cleanup location when the loop exits safely
+    // Unified cleanup location when the loop exits safely
     std::lock_guard<std::mutex> lock(socket_mutex_);
     if (active_socket_ == socket) {
         active_socket_.reset();
