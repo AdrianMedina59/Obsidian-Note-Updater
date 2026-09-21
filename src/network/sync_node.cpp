@@ -97,6 +97,7 @@ void SyncNode::listen_loop() {
             if (!active_socket_ || !active_socket_->is_open()) {
                 active_socket_ = socket;
                 std::cout << "[Server] Accepted inbound connection and promoted to active channel!\n";
+
                 std::thread(&SyncNode::receive_loop, this, active_socket_).detach();
             } else {
                 // Already have a working socket connection, close this duplicate gracefully
@@ -111,38 +112,54 @@ void SyncNode::listen_loop() {
 void SyncNode::receive_loop(std::shared_ptr<asio::ip::tcp::socket> socket) {
     try {
         while (is_running_) {
-            try {
             uint32_t payload_length = 0;
-            asio::read(*socket, asio::buffer(&payload_length, sizeof(payload_length)));
+            asio::error_code ec;
+            
+            // Read 4-byte header length prefix securely
+            asio::read(*socket, asio::buffer(&payload_length, sizeof(payload_length)), ec);
+            if (ec) {
+                std::cout << "[Session] Transport disconnect event recognized: " << ec.message() << "\n";
+                break;
+            }
+
+            if (payload_length == 0 || payload_length > 64 * 1024 * 1024) {
+                continue; // Protection boundary against corrupted frames
+            }
 
             std::vector<char> buffer(payload_length);
-            asio::read(*socket, asio::buffer(buffer.data(), payload_length));
-
-            std::string raw_json(buffer.begin(), buffer.end());
-            auto parsed_payload = nlohmann::json::parse(raw_json);
-            std::string msg_type = parsed_payload.value("type", "");
-
-            if (msg_type == "MSG_VAULT_INDEX") {
-                reconcile_remote_index(parsed_payload);
-            } else if (msg_type == "MSG_FILE_REQ") {
-                handle_file_request(parsed_payload["path"]);
-            } else if (msg_type == "MSG_FILE_PAYLOAD") {
-                handle_incoming_payload(parsed_payload);
+            asio::read(*socket, asio::buffer(buffer.data(), payload_length), ec);
+            if (ec) {
+                std::cout << "[Session] Body read error: " << ec.message() << "\n";
+                break;
             }
-         } catch(const nlohmann::json::parse_error& e){
-             std::cerr << "[Framing Error] JSON packet corruption detected: " << e.what() << "\n";
-             break; // Break the loop safely to allow reconnection
-         }
+
+            try {
+                std::string raw_json(buffer.begin(), buffer.end());
+                auto parsed_payload = nlohmann::json::parse(raw_json);
+                std::string msg_type = parsed_payload.value("type", "");
+
+                if (msg_type == "MSG_VAULT_INDEX") {
+                    reconcile_remote_index(parsed_payload);
+                } else if (msg_type == "MSG_FILE_REQ") {
+                    handle_file_request(parsed_payload["path"]);
+                } else if (msg_type == "MSG_FILE_PAYLOAD") {
+                    handle_incoming_payload(parsed_payload);
+                }
+            } 
+            catch(const nlohmann::json::parse_error& e){
+                 std::cerr << "[Framing Error] JSON packet corruption detected: " << e.what() << "\n";
+            }
         }
     }
     catch (...) {
-        std::cout << "[Session] Active communication pipeline disconnected.\n";
-       
-       
-        std::lock_guard<std::mutex> lock(socket_mutex_);
-        if (active_socket_ == socket) {
-            active_socket_.reset();
-        }
+        std::cout << "[Session] Unexpected runtime failure inside reading channel.\n";
+    }
+
+    // Single unified cleanup location when the loop exits safely
+    std::lock_guard<std::mutex> lock(socket_mutex_);
+    if (active_socket_ == socket) {
+        active_socket_.reset();
+        std::cout << "[Session] Channel cleared out cleanly.\n";
     }
 }
 
