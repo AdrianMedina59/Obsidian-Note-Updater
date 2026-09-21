@@ -139,7 +139,16 @@ void SyncNode::receive_loop(std::shared_ptr<asio::ip::tcp::socket> socket) {
                 std::string msg_type = parsed_payload.value("type", "");
 
                 if (msg_type == "MSG_VAULT_INDEX") {
-                    reconcile_remote_index(parsed_payload);
+                    //This allows receive_loop to immediately return and wait for incoming files!
+                    std::thread([this, parsed_payload]() {
+                         try {
+                             reconcile_remote_index(parsed_payload);
+                            }
+                            catch (const std::exception& e) {
+                                std::cerr << "[Reconciliation Error] " << e.what() << "\n";
+                            }
+                        }).detach();
+
                 } else if (msg_type == "MSG_FILE_REQ") {
                     handle_file_request(parsed_payload["path"]);
                 } else if (msg_type == "MSG_FILE_PAYLOAD") {
@@ -197,7 +206,7 @@ void SyncNode::reconcile_remote_index(const nlohmann::json& remote_payload) {
             send_message(req_payload);
 
             //short throttling backoff to ensure packets are sent not too fast
-            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
     }
 }
