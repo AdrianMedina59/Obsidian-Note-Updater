@@ -110,15 +110,19 @@ void SyncNode::listen_loop() {
 
 
 void SyncNode::receive_loop(std::shared_ptr<asio::ip::tcp::socket> socket) {
+    // Hold a local reference to the socket within this thread's frame scope
+    // to ensure it cannot be destroyed mid-execution by another thread resetting active_socket_
+    std::shared_ptr<asio::ip::tcp::socket> keeper = socket;
+
     try {
-        while (is_running_) {
+        while (is_running_ && keeper && keeper->is_open()) {
             uint32_t payload_length = 0;
             asio::error_code ec;
             
             // Read 4-byte header length prefix securely
-            asio::read(*socket, asio::buffer(&payload_length, sizeof(payload_length)), ec);
+            asio::read(*keeper, asio::buffer(&payload_length, sizeof(payload_length)), ec);
             if (ec) {
-                std::cout << "[Session] Transport disconnect event recognized: " << ec.message() << "\n";
+                std::cout << "[Session] Transport stream ended: " << ec.message() << "\n";
                 break;
             }
 
@@ -127,7 +131,7 @@ void SyncNode::receive_loop(std::shared_ptr<asio::ip::tcp::socket> socket) {
             }
 
             std::vector<char> buffer(payload_length);
-            asio::read(*socket, asio::buffer(buffer.data(), payload_length), ec);
+            asio::read(*keeper, asio::buffer(buffer.data(), payload_length), ec);
             if (ec) {
                 std::cout << "[Session] Body read error: " << ec.message() << "\n";
                 break;
@@ -139,7 +143,6 @@ void SyncNode::receive_loop(std::shared_ptr<asio::ip::tcp::socket> socket) {
                 std::string msg_type = parsed_payload.value("type", "");
 
                 if (msg_type == "MSG_VAULT_INDEX") {
-                    // --- FIXED: Pass a completely isolated string copy to prevent memory race conditions ---
                     std::thread([this, raw_json_copy = std::move(raw_json)]() {
                         try {
                             auto thread_safe_json = nlohmann::json::parse(raw_json_copy);
@@ -162,13 +165,18 @@ void SyncNode::receive_loop(std::shared_ptr<asio::ip::tcp::socket> socket) {
             }
         }
     }
+    catch (const std::exception& e) {
+        std::cout << "[Session] Standard exception encountered in reading channel: " << e.what() << "\n";
+    }
     catch (...) {
-        std::cout << "[Session] Unexpected runtime failure inside reading channel.\n";
+        std::cout << "[Session] Runtime failure inside reading channel.\n";
     }
 
-    // Unified cleanup location when the loop exits safely
+    // Clean up cleanly only when everything has stopped using the connection context
     std::lock_guard<std::mutex> lock(socket_mutex_);
-    if (active_socket_ == socket) {
+    if (active_socket_ == keeper) {
+        asio::error_code close_ec;
+        active_socket_->close(close_ec);
         active_socket_.reset();
         std::cout << "[Session] Channel cleared out cleanly.\n";
     }
@@ -286,28 +294,31 @@ void SyncNode::handle_incoming_payload(const nlohmann::json& payload)
 
 
 void SyncNode::send_message(const nlohmann::json& message) {
-
-    std::lock_guard<std::mutex> lock(socket_mutex_);
-   
-    if (!active_socket_ || !active_socket_->is_open()) {
-        std::cerr << "[Transport Error] No active communication channel available.\n";
-        return;
+    // Copy the active pointer context locally within the lock window to prevent data race modifications
+    std::shared_ptr<asio::ip::tcp::socket> current_sock;
+    {
+        std::lock_guard<std::mutex> lock(socket_mutex_);
+        if (!active_socket_ || !active_socket_->is_open()) return;
+        current_sock = active_socket_;
     }
 
     try {
         std::string serialized = message.dump();
         uint32_t length = static_cast<uint32_t>(serialized.size());
 
-        //flatten layout into a single continous string packet block
         std::string packet;
         packet.resize(sizeof(length) + length);
-
+        
         std::memcpy(packet.data(), &length, sizeof(length));
         std::memcpy(packet.data() + sizeof(length), serialized.data(), length);
 
-        asio::write(*active_socket_, asio::buffer(packet));
+        // Perform write operations using our safely incremented thread-local shared instance
+        asio::write(*current_sock, asio::buffer(packet));
     }
     catch (const std::exception& e) {
-        std::cerr << "[Transmit Error] Packet drop occurred: " << e.what() << "\n";
+        std::cerr << "[Transmit Error] Packet stream write failure: " << e.what() << "\n";
+    }
+    catch (...) {
+        std::cerr << "[Transmit Error] Unknown packet stream write failure.\n";
     }
 }
