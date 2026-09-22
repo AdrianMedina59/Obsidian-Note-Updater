@@ -45,10 +45,19 @@ FetchContent_MakeAvailable(json)
 set(SRC_FILES
     src/main.cpp
     src/network/sync_node.cpp
+    src/storage/snapshot.cpp
 )
 
-add_executable(peer_sync ${SRC_FILES}
-    src/storage/snapshot.cpp)
+# The two watcher backends are mutually exclusive; each guards itself with
+# _WIN32 internally, but only the matching one is compiled to keep the other
+# platform's system headers out of the build entirely.
+if(WIN32)
+    list(APPEND SRC_FILES src/watcher/watcher_windows.cpp)
+else()
+    list(APPEND SRC_FILES src/watcher/watcher_linux.cpp)
+endif()
+
+add_executable(peer_sync ${SRC_FILES})
 
 # Link dependencies and set include paths
 target_include_directories(peer_sync PRIVATE 
