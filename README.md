@@ -1,16 +1,13 @@
-adrian-medina@adrian-medina-IdeaPad-3-15ITL05 ~/c/O/build (main)> ./peer_sync 8081 192.168.1.212 8080 /home/adrian-medina/Documents/TestVault
-Press Enter to transmit a test sync transaction handshake or 'q' then Enter to quit... 
-[Client] Established outbound channel to peer!
-[Sync] Reconciling indices and issuing pull requests...
- -> Pulling Missing File: Quant Roadmap/roadmap prep/Phase 2 step 3 in depth.md
- -> Pulling Missing File: game ideas/Game of Life.md
- -> Pulling Missing File: AI project ideas/AI Project Ideas.md
- -> Pulling Missing File: Quant Roadmap/Two-tier high-Frequency Backtesting engine and execution simulator/Introduction - Two-Tier High-Frequency Backtesting Engine & Execution Simulator.md
- -> Pulling Missing File: Unit 14.md
- -> Pulling Missing File: Claude architect notes/Domain 1 - Agentic Architecture and Orchestration.md
- -> Pulling Missing File: Nvidia AI inf notes/Unit 4.md
- -> Pulling Missing File: Youtube scripts/AI is making you a CHUD.md
- -> Pulling Missing File: OpenGL notes/OpenGL notes and roadmap for fundamentals.md
- -> Pulling Missing File: Quant Roadmap/roadmap prep/Roadmap resources.md
-[Session] Unexpected runtime failure inside reading channel.
-[Session] Channel cleared out cleanly.
+# PeerSync: Cross-Platform P2P Sync Engine for Obsidian
+
+A high-performance, real-time peer-to-peer file synchronization engine written in **Modern C++ (C++20)**. PeerSync automatically bridges and harmonizes Markdown vaults between **Windows 10 (Win32)** and **Ubuntu Linux (POSIX)** filesystems over a custom bi-directional network transport layer without relying on third-party cloud servers.
+
+## 🚀 Core Systems Architecture
+
+PeerSync splits execution path workloads into isolated, thread-safe domain modules:
+
+*   **Transport Layer (Asio Standalone):** A multi-threaded, symmetric bi-directional network pipeline utilizing length-prefixed framing layouts to bypass packet bleeding over TCP socket channels.
+*   **State Analysis Engine (std::filesystem):** Generates deterministic, fast cryptographic content hashes (FNV-1a streaming hashes) to scan structural state catalogs and run differential index comparisons.
+*   **OS-Native File Monitors:** Real-time, platform-dependent event watchers leveraging native kernel subsystems (**POSIX `inotify`** on Ubuntu and **Win32 `ReadDirectoryChangesW`** on Windows 10) featuring debounced event-throttling.
+*   **Atomic Storage Commit Pipeline:** Implements atomic write staging buffers (`.tmp` allocations) before execution swap renames (`std::filesystem::rename`) to completely prevent target file corruption during transmission.
+
